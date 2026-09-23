@@ -3,12 +3,25 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft, Award, BarChart3, BookOpen, Check, ChevronRight, Dumbbell, Home,
-  Medal, Minus, Plus, RotateCcw, Timer, TrendingUp, UserRound, Zap
+  Medal, Minus, Plus, RotateCcw, Timer, TrendingUp, UserRound, Zap, Gauge,
+  ShieldCheck, ArrowDown, ArrowUp
 } from 'lucide-react';
 
 type View = 'home' | 'workout' | 'book' | 'progress' | 'programs' | 'milestones';
-type WorkoutStage = 'ramp' | 'lift' | 'rest' | 'summary';
-type WorkSet = { weight:number; reps:number; rir:number; target:number; beaten:boolean; rest:number };
+type WorkoutStage = 'ramp' | 'readiness' | 'lift' | 'rest' | 'summary';
+type Readiness = 'fast' | 'normal' | 'heavy' | null;
+type AutoState = 'ON TRACK' | 'PUSH' | 'ADJUST';
+type WorkSet = {
+  weight:number;
+  reps:number;
+  rir:number;
+  target:number;
+  beaten:boolean;
+  rest:number;
+  state:AutoState;
+  suggestedWeight:number;
+  reason:string;
+};
 
 const nav: Array<{ id: View; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { id: 'home', label: 'Home', icon: Home },
@@ -23,8 +36,8 @@ const rampSets = [
   { label:'BAR', weight:20, reps:10 },
   { label:'60 KG', weight:60, reps:6 },
   { label:'80 KG', weight:80, reps:3 },
-  { label:'90 KG', weight:90, reps:1 },
 ];
+const readinessSet = { label:'90 KG', weight:90, reps:1 };
 
 const historySeed = [
   ['19 SEP', 'PUSH / A', '2 PR'], ['17 SEP', 'PULL / A', '—'], ['15 SEP', 'LEGS / A', '1 PR'],
@@ -35,6 +48,18 @@ function fmt(sec:number){
   const m=Math.floor(sec/60).toString().padStart(2,'0');
   const s=(sec%60).toString().padStart(2,'0');
   return `${m}:${s}`;
+}
+
+function roundPlate(v:number){ return Math.round(v/2.5)*2.5; }
+
+function analyzeSet(weight:number, reps:number, target:number, rir:number): {state:AutoState; suggestedWeight:number; reason:string} {
+  if (reps >= target + 2 && rir >= 2) {
+    return { state:'PUSH', suggestedWeight:roundPlate(weight + 2.5), reason:'PERFORMANCE ABOVE TARGET' };
+  }
+  if ((reps <= target - 2 && rir === 0) || (reps < target && rir === 0)) {
+    return { state:'ADJUST', suggestedWeight:roundPlate(Math.max(20, weight - 5)), reason:'PERFORMANCE DROP DETECTED' };
+  }
+  return { state:'ON TRACK', suggestedWeight:weight, reason:'PERFORMANCE ON TARGET' };
 }
 
 export default function Page() {
@@ -48,13 +73,16 @@ export default function Page() {
   const [sets, setSets] = useState<WorkSet[]>([]);
   const [rest, setRest] = useState(180);
   const [lastRest, setLastRest] = useState(180);
+  const [readiness, setReadiness] = useState<Readiness>(null);
+  const [plannedWeight, setPlannedWeight] = useState(100);
+  const [pendingWeight, setPendingWeight] = useState<number | null>(null);
 
   const target = useMemo(() => {
     if (workIndex === 0) return previousSets[0] + 1;
     const prev = sets[workIndex - 1];
     if (!prev) return previousSets[workIndex] ?? 8;
-    if (prev.reps >= prev.target && prev.rir >= 1) return Math.max(previousSets[workIndex] ?? 8, prev.reps - 1);
-    if (prev.reps < prev.target && prev.rir === 0) return Math.max(6, prev.reps + 1);
+    if (prev.state === 'PUSH') return Math.max(previousSets[workIndex] ?? 8, prev.reps - 1);
+    if (prev.state === 'ADJUST') return Math.max(8, previousSets[workIndex] ?? 8);
     return previousSets[workIndex] ?? 8;
   }, [workIndex, sets]);
 
@@ -69,21 +97,61 @@ export default function Page() {
   }, [target, view, stage]);
 
   function startSession(){
-    setView('workout'); setStage('ramp'); setRampIndex(0); setWorkIndex(0); setSets([]); setWeight(100); setRir(1);
+    setView('workout');
+    setStage('ramp');
+    setRampIndex(0);
+    setWorkIndex(0);
+    setSets([]);
+    setWeight(100);
+    setPlannedWeight(100);
+    setPendingWeight(null);
+    setRir(1);
+    setReadiness(null);
   }
 
   function completeRamp(){
     if (rampIndex < rampSets.length - 1) setRampIndex(i=>i+1);
-    else { setStage('lift'); setReps(previousSets[0] + 1); }
+    else setStage('readiness');
+  }
+
+  function confirmReadiness(choice:Exclude<Readiness,null>){
+    setReadiness(choice);
+    if (choice === 'heavy') setPendingWeight(95);
+    else {
+      const w = choice === 'fast' ? 102.5 : plannedWeight;
+      setWeight(w);
+      setPendingWeight(null);
+      setStage('lift');
+      setReps(previousSets[0] + 1);
+    }
+  }
+
+  function acceptReadinessAdjustment(){
+    const w = pendingWeight ?? 95;
+    setWeight(w);
+    setPlannedWeight(w);
+    setPendingWeight(null);
+    setStage('lift');
+    setReps(previousSets[0] + 1);
+  }
+
+  function keepPlannedReadiness(){
+    setWeight(plannedWeight);
+    setPendingWeight(null);
+    setStage('lift');
+    setReps(previousSets[0] + 1);
   }
 
   function logSet(){
     const beaten = reps > previousSets[workIndex];
     const adaptiveRest = rir === 0 ? 210 : rir >= 3 ? 150 : 180;
-    const item:WorkSet = { weight, reps, rir, target, beaten, rest: adaptiveRest };
+    const analysis = analyzeSet(weight,reps,target,rir);
+    const item:WorkSet = { weight, reps, rir, target, beaten, rest: adaptiveRest, ...analysis };
     const next = [...sets, item];
     setSets(next);
     setLastRest(adaptiveRest);
+    setPendingWeight(analysis.state === 'ON TRACK' ? null : analysis.suggestedWeight);
+
     if (workIndex >= 2) {
       setStage('summary');
       try { localStorage.setItem('ironform:lastSession', JSON.stringify(next)); } catch {}
@@ -93,11 +161,23 @@ export default function Page() {
     }
   }
 
-  function nextSet(){ setWorkIndex(i=>i+1); setStage('lift'); setRir(1); }
+  function continueAfterRest(useSuggestion:boolean){
+    const last = sets[sets.length-1];
+    if (useSuggestion && pendingWeight != null) setWeight(pendingWeight);
+    else if (last) setWeight(last.weight);
+    setPendingWeight(null);
+    setWorkIndex(i=>i+1);
+    setStage('lift');
+    setRir(1);
+  }
+
   function resetWorkout(){ startSession(); }
 
   const beatenCount = sets.filter(s=>s.beaten).length;
   const totalVolume = sets.reduce((a,s)=>a+s.weight*s.reps,0);
+  const pushCount = sets.filter(s=>s.state==='PUSH').length;
+  const adjustCount = sets.filter(s=>s.state==='ADJUST').length;
+  const lastSet = sets[sets.length-1];
 
   return (
     <main className="app-shell">
@@ -111,19 +191,41 @@ export default function Page() {
         <div className="screen">
           {view==='home' && <>
             <section className="hero-card paper-card"><div><p className="eyebrow">FRI 19 SEP 2026</p><h1>WEEK 03 / 12</h1><p className="muted">CURRENT PHASE</p><h2 className="red">BULK</h2><p className="script">More weight. Stronger tomorrow.</p></div><div className="hero-art">IRON<br/>MIND</div></section>
-            <section className="stats-grid"><article className="paper-card stat"><span>BODYWEIGHT</span><b>82.4 kg</b><small>+1.8 kg since start</small></article><article className="paper-card stat"><span>TODAY'S WORK</span><b>PUSH / A</b><small>Bench focus · 3 work sets</small></article></section>
+            <section className="stats-grid"><article className="paper-card stat"><span>BODYWEIGHT</span><b>82.4 kg</b><small>+1.8 kg since start</small></article><article className="paper-card stat"><span>TODAY'S WORK</span><b>PUSH / A</b><small>Bench focus · smart workout</small></article></section>
             <button className="primary" onClick={startSession}>START SESSION <ChevronRight size={18}/></button>
-            <section className="paper-card philosophy"><p className="eyebrow">WORKOUT LOOP</p><h3>PREPARE → LIFT → LOG → REST → PROGRESS</h3><p>One clear action at a time.</p></section>
+            <section className="paper-card philosophy"><p className="eyebrow">WORKOUT LOOP</p><h3>PREPARE → LIFT → LOG → REST → ADAPT → PROGRESS</h3><p>One clear action at a time.</p></section>
           </>}
 
           {view==='workout' && stage==='ramp' && <>
             <div className="tabs"><button className="active">RAMP UP</button><button>WORK SETS</button><button>HISTORY</button></div>
             <section className="paper-card lift-card">
-              <p className="eyebrow">PREPARE</p><h2>BENCH PRESS</h2><p className="muted">WORKING LOAD</p><h1>100 KG</h1>
+              <p className="eyebrow">PREPARE</p><h2>BENCH PRESS</h2><p className="muted">WORKING LOAD</p><h1>{plannedWeight} KG</h1>
               <div className="set-list">{rampSets.map((r,i)=><div key={r.label} className={i===rampIndex?'current':''}><span>{i<rampIndex?<Check size={13}/>:i+1}</span><b>{r.label} × {r.reps}</b>{i<rampIndex?<Check size={16}/>:i===rampIndex?<ChevronRight size={16}/>:<span/>}</div>)}</div>
             </section>
             <section className="paper-card logging"><p className="eyebrow">WHAT DO I DO NOW?</p><h2>{rampSets[rampIndex].label} × {rampSets[rampIndex].reps}</h2><p className="muted">Prepare without creating fatigue.</p></section>
-            <button className="primary" onClick={completeRamp}>{rampIndex===rampSets.length-1?'RAMP COMPLETE':'LOG RAMP'} <Check size={18}/></button>
+            <button className="primary" onClick={completeRamp}>{rampIndex===rampSets.length-1?'READINESS SET':'LOG RAMP'} <Check size={18}/></button>
+          </>}
+
+          {view==='workout' && stage==='readiness' && <>
+            <section className="paper-card logging readiness-card">
+              <p className="eyebrow">READINESS SET</p>
+              <Gauge size={36}/>
+              <h1>{readinessSet.weight} KG × {readinessSet.reps}</h1>
+              <p className="muted">HOW DID IT FEEL?</p>
+              <div className="readiness-options">
+                <button onClick={()=>confirmReadiness('fast')}><ArrowUp size={18}/><b>FAST</b><small>Better than normal</small></button>
+                <button onClick={()=>confirmReadiness('normal')}><ShieldCheck size={18}/><b>NORMAL</b><small>As expected</small></button>
+                <button onClick={()=>confirmReadiness('heavy')}><ArrowDown size={18}/><b>HEAVY</b><small>Below normal</small></button>
+              </div>
+            </section>
+
+            {readiness==='heavy' && pendingWeight!==null && <section className="paper-card smart-card adjust">
+              <p className="eyebrow">ADJUST</p>
+              <h2>READINESS BELOW NORMAL</h2>
+              <div className="compare-load"><div><span>PLANNED</span><b>{plannedWeight} KG</b></div><ChevronRight/><div><span>TODAY</span><b>{pendingWeight} KG</b></div></div>
+              <p>Reduce the working load slightly. You stay in control.</p>
+              <div className="decision-grid"><button className="primary" onClick={acceptReadinessAdjustment}>ACCEPT</button><button className="secondary" onClick={keepPlannedReadiness}>KEEP {plannedWeight} KG</button></div>
+            </section>}
           </>}
 
           {view==='workout' && stage==='lift' && <>
@@ -143,15 +245,38 @@ export default function Page() {
             <button className="primary" onClick={logSet}>LOG SET <Check size={18}/></button>
           </>}
 
-          {view==='workout' && stage==='rest' && <>
-            <section className="paper-card result-card"><p className="eyebrow">SET {workIndex+1} COMPLETE</p><h1>{sets[sets.length-1]?.weight} kg × {sets[sets.length-1]?.reps}</h1>{sets[sets.length-1]?.beaten?<><div className="stamp">BOOK BEATEN</div><b>+{sets[sets.length-1].reps-previousSets[workIndex]} REP</b></>:<><div className="stamp neutral">LOGGED</div><b>ON TRACK</b></>}</section>
-            <section className="rest-panel"><p className="eyebrow">REST · AUTO STARTED</p><div className="timer-ring"><Timer size={28}/><b>{fmt(rest)}</b></div><div className="next-set"><span>NEXT</span><b>BENCH PRESS · SET {workIndex+2} / 03</b><strong>{weight} KG × {targetForNext(workIndex,sets)}+</strong></div>{lastRest!==180&&<p className="rest-reason">{lastRest>180?'+30 SEC · HIGH EFFORT':'-30 SEC · LOW EFFORT'}</p>}<div className="row-actions"><button onClick={()=>setRest(v=>v+30)}>+30 SEC</button><button onClick={nextSet}>{rest===0?'START SET':'READY'}</button></div></section>
+          {view==='workout' && stage==='rest' && lastSet && <>
+            <section className={`paper-card result-card ${lastSet.state.toLowerCase().replace(' ','-')}`}>
+              <p className="eyebrow">SET {workIndex+1} COMPLETE</p>
+              <h1>{lastSet.weight} kg × {lastSet.reps}</h1>
+              {lastSet.beaten && <><div className="stamp">BOOK BEATEN</div><b>+{lastSet.reps-previousSets[workIndex]} REP</b></>}
+              <div className={`auto-state ${lastSet.state==='PUSH'?'push':lastSet.state==='ADJUST'?'adjust':'track'}`}>
+                {lastSet.state==='PUSH'?<ArrowUp/>:lastSet.state==='ADJUST'?<ArrowDown/>:<ShieldCheck/>}
+                <div><span>AUTOREGULATION</span><strong>{lastSet.state}</strong><small>{lastSet.reason}</small></div>
+              </div>
+            </section>
+
+            <section className="rest-panel">
+              <p className="eyebrow">REST · AUTO STARTED</p>
+              <div className="timer-ring"><Timer size={28}/><b>{fmt(rest)}</b></div>
+              <div className="next-set"><span>NEXT</span><b>BENCH PRESS · SET {workIndex+2} / 03</b><strong>{pendingWeight ?? lastSet.weight} KG × {targetForNext(workIndex,sets)}+</strong></div>
+              {lastRest!==180&&<p className="rest-reason">{lastRest>180?'+30 SEC · HIGH EFFORT':'-30 SEC · LOW EFFORT'}</p>}
+
+              {lastSet.state!=='ON TRACK' && pendingWeight!==null && <div className={`smart-inline ${lastSet.state==='PUSH'?'push':'adjust'}`}>
+                <span>SUGGESTED NEXT SET</span>
+                <b>{pendingWeight} KG</b>
+                <small>{lastSet.reason}</small>
+              </div>}
+
+              <div className="row-actions"><button onClick={()=>setRest(v=>v+30)}>+30 SEC</button><button onClick={()=>continueAfterRest(lastSet.state!=='ON TRACK')}>{rest===0?'START SET':lastSet.state==='ON TRACK'?'READY':'ACCEPT'}</button></div>
+              {lastSet.state!=='ON TRACK' && <button className="keep-load" onClick={()=>continueAfterRest(false)}>KEEP {lastSet.weight} KG</button>}
+            </section>
           </>}
 
           {view==='workout' && stage==='summary' && <>
             <section className="paper-card result-card"><p className="eyebrow">SESSION COMPLETE</p><h1>PUSH / A</h1><div className="stamp">DONE</div></section>
-            <section className="paper-card summary-grid"><div><span>WORK SETS</span><b>{sets.length}</b></div><div><span>VOLUME</span><b>{totalVolume.toLocaleString()} KG</b></div><div><span>BOOKS BEATEN</span><b>{beatenCount}</b></div><div><span>REST AVG</span><b>{Math.round(sets.reduce((a,s)=>a+s.rest,0)/sets.length/60)} MIN</b></div></section>
-            <section className="paper-card"><p className="eyebrow">COACH'S NOTE</p><p>{beatenCount>=2?'Strong session. Progression confirmed. Keep the current load and beat the book again next time.':'Session logged. Keep the load stable and aim to improve reps before adding weight.'}</p></section>
+            <section className="paper-card summary-grid"><div><span>WORK SETS</span><b>{sets.length}</b></div><div><span>VOLUME</span><b>{totalVolume.toLocaleString()} KG</b></div><div><span>BOOKS BEATEN</span><b>{beatenCount}</b></div><div><span>ADAPTATIONS</span><b>{pushCount+adjustCount}</b></div></section>
+            <section className="paper-card"><p className="eyebrow">COACH'S NOTE</p><p>{adjustCount>0?'Performance dropped on at least one set. The session was adjusted rather than forcing the planned load.':pushCount>0?'Performance exceeded target. A controlled load increase was suggested where appropriate.':'Performance stayed on target. Keep building from this baseline.'}</p></section>
             <button className="primary" onClick={()=>setView('book')}>ADD TO THE BOOK <BookOpen size={18}/></button>
           </>}
 
@@ -174,7 +299,7 @@ export default function Page() {
 function targetForNext(workIndex:number, sets:WorkSet[]){
   const last = sets[sets.length-1];
   if (!last) return previousSets[workIndex+1] ?? 8;
-  if (last.reps >= last.target && last.rir >= 1) return Math.max(previousSets[workIndex+1] ?? 8, last.reps-1);
-  if (last.reps < last.target && last.rir===0) return Math.max(6,last.reps+1);
+  if (last.state==='PUSH') return Math.max(previousSets[workIndex+1] ?? 8, last.reps-1);
+  if (last.state==='ADJUST') return Math.max(8, previousSets[workIndex+1] ?? 8);
   return previousSets[workIndex+1] ?? 8;
 }
